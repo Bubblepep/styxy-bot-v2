@@ -1,0 +1,1810 @@
+name: Build STYXY Bot APK
+​on:
+push:
+branches: [ "main", "master" ]
+workflow_dispatch:
+​permissions:
+contents: write
+​jobs:
+build:
+runs-on: ubuntu-latest
+​steps:
+- name: Checkout Repository
+uses: actions/checkout@v4
+​- name: Generate Android Projectname: Build STYXY Bot APK
+​on:
+push:
+branches: [ "main", "master" ]
+workflow_dispatch:
+​permissions:
+contents: write
+​jobs:
+build:
+runs-on: ubuntu-latest
+​steps:
+- name: Checkout Repository
+uses: actions/checkout@v4
+​- name: Generate Android Project Structure
+shell: python
+run: |
+import os
+import pathlib
+​files = {}
+​files["settings.gradle.kts"] = """
+pluginManagement {
+repositories {
+google()
+mavenCentral()
+gradlePluginPortal()
+}
+}
+dependencyResolutionManagement {
+repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+repositories {
+google()
+mavenCentral()
+}
+}
+rootProject.name = "StyxyBot"
+include(":app")
+"""
+​files["build.gradle.kts"] = """
+plugins {
+id("com.android.application") version "8.5.2" apply false
+id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+}
+"""
+​files["gradle.properties"] = """
+org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+android.useAndroidX=true
+kotlin.code.style=official
+android.nonTransitiveRClass=true
+"""
+​files["app/build.gradle.kts"] = """
+plugins {
+id("com.android.application")
+id("org.jetbrains.kotlin.android")
+}
+​android {
+namespace = "com.styxy.bot"
+compileSdk = 35
+​defaultConfig {
+applicationId = "com.styxy.bot"
+minSdk = 30
+targetSdk = 35
+versionCode = 201
+versionName = "2.0.1-M1"
+}
+​buildTypes {
+release {
+isMinifyEnabled = false
+}
+}
+​compileOptions {
+sourceCompatibility = JavaVersion.VERSION_17
+targetCompatibility = JavaVersion.VERSION_17
+}
+​kotlinOptions {
+jvmTarget = "17"
+}
+}
+​dependencies {
+implementation("androidx.core:core-ktx:1.13.1")
+implementation("androidx.appcompat:appcompat:1.7.0")
+implementation("com.google.android.material:material:1.12.0")
+implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+implementation("com.google.mlkit:text-recognition:16.0.1")
+}
+"""
+​files["app/src/main/AndroidManifest.xml"] = """
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+​<application
+android:allowBackup="true"
+android:label="STYXY BOT"
+android:supportsRtl="true"
+android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
+​<activity
+android:name=".MainActivity"
+android:exported="true"
+android:launchMode="singleTop">
+<intent-filter>
+<action android:name="android.intent.action.MAIN" />
+<category android:name="android.intent.category.LAUNCHER" />
+</intent-filter>
+</activity>
+​<service
+android:name=".StyxyAccessibilityService"
+android:enabled="true"
+android:exported="false"
+android:label="STYXY Bot Automation Service"
+android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+<intent-filter>
+<action android:name="android.accessibilityservice.AccessibilityService" />
+</intent-filter>
+<meta-data
+android:name="android.accessibilityservice"
+android:resource="@xml/accessibility_service_config" />
+</service>
+​</application>
+</manifest>
+"""
+​files["app/src/main/res/xml/accessibility_service_config.xml"] = """
+<?xml version="1.0" encoding="utf-8"?>
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+android:accessibilityFeedbackType="feedbackGeneric"
+android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews"
+android:canPerformGestures="true"
+android:canRetrieveWindowContent="true"
+android:canTakeScreenshot="true"
+android:notificationTimeout="100" />
+"""
+​files["app/src/main/java/com/styxy/bot/VisionEngine.kt"] = """
+package com.styxy.bot
+​import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Color
+import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
+​data class MatchResult(
+val found: Boolean,
+val confidence: Double,
+val centerNormX: Float,
+val centerNormY: Float,
+val matchPixelX: Int,
+val matchPixelY: Int,
+val reason: String
+)
+​data class SavedTemplate(
+val name: String,
+val bitmap: Bitmap,
+val expectedNormX: Float,
+val expectedNormY: Float,
+val normWidth: Float,
+val normHeight: Float,
+val sourceScreenWidth: Int,
+val sourceScreenHeight: Int
+)
+​object VisionEngine {
+​private const val TEMPLATE_DIR = "templates"
+private const val DIAG_DIR = "diagnostics"
+​fun saveTemplate(
+context: Context,
+name: String,
+fullScreen: Bitmap,
+centerNormX: Float,
+centerNormY: Float,
+boxSizePx: Int = 110
+): SavedTemplate {
+val dir = File(context.filesDir, TEMPLATE_DIR).apply { mkdirs() }
+val cx = (centerNormX * fullScreen.width).toInt().coerceIn(0, fullScreen.width - 1)
+val cy = (centerNormY * fullScreen.height).toInt().coerceIn(0, fullScreen.height - 1)
+val half = boxSizePx / 2
+​val left = (cx - half).coerceAtLeast(0)
+val top = (cy - half).coerceAtLeast(0)
+val width = min(boxSizePx, fullScreen.width - left)
+val height = min(boxSizePx, fullScreen.height - top)
+​val cropped = Bitmap.createBitmap(fullScreen, left, top, width, height)
+val imgFile = File(dir, "$name.png")
+FileOutputStream(imgFile).use { out ->
+cropped.compress(Bitmap.CompressFormat.PNG, 100, out)
+}
+​val meta = JSONObject().apply {
+put("name", name)
+put("expectedNormX", centerNormX.toDouble())
+put("expectedNormY", centerNormY.toDouble())
+put("normWidth", (width.toFloat() / fullScreen.width).toDouble())
+put("normHeight", (height.toFloat() / fullScreen.height).toDouble())
+put("sourceScreenWidth", fullScreen.width)
+put("sourceScreenHeight", fullScreen.height)
+}
+File(dir, "$name.json").writeText(meta.toString(2))
+​return SavedTemplate(
+name = name,
+bitmap = cropped,
+expectedNormX = centerNormX,
+expectedNormY = centerNormY,
+normWidth = width.toFloat() / fullScreen.width,
+normHeight = height.toFloat() / fullScreen.height,
+sourceScreenWidth = fullScreen.width,
+sourceScreenHeight = fullScreen.height
+)
+}
+​fun loadTemplate(context: Context, name: String): SavedTemplate? {
+val dir = File(context.filesDir, TEMPLATE_DIR)
+val imgFile = File(dir, "$name.png")
+val metaFile = File(dir, "$name.json")
+if (!imgFile.exists() || !metaFile.exists()) return null
+​val bmp = BitmapFactory.decodeFile(imgFile.absolutePath) ?: return null
+val json = JSONObject(metaFile.readText())
+return SavedTemplate(
+name = name,
+bitmap = bmp,
+expectedNormX = json.getDouble("expectedNormX").toFloat(),
+expectedNormY = json.getDouble("expectedNormY").toFloat(),
+normWidth = json.getDouble("normWidth").toFloat(),
+normHeight = json.getDouble("normHeight").toFloat(),
+sourceScreenWidth = json.optInt("sourceScreenWidth", 1080),
+sourceScreenHeight = json.optInt("sourceScreenHeight", 2340)
+)
+}
+​fun findTemplateInROI(
+screen: Bitmap,
+template: SavedTemplate,
+roiMarginNorm: Float = 0.08f,
+minConfidence: Double = 0.82
+): MatchResult {
+val tplBmp = if (screen.width != template.sourceScreenWidth) {
+val scaledW = max(16, (template.normWidth * screen.width).toInt())
+val scaledH = max(16, (template.normHeight * screen.height).toInt())
+Bitmap.createScaledBitmap(template.bitmap, scaledW, scaledH, true)
+} else {
+template.bitmap
+}
+​val tw = tplBmp.width
+val th = tplBmp.height
+​val expectedCx = (template.expectedNormX * screen.width).toInt()
+val expectedCy = (template.expectedNormY * screen.height).toInt()
+val marginX = (roiMarginNorm * screen.width).toInt()
+val marginY = (roiMarginNorm * screen.height).toInt()
+​val searchLeft = (expectedCx - marginX - tw / 2).coerceIn(0, max(0, screen.width - tw))
+val searchRight = (expectedCx + marginX - tw / 2).coerceIn(searchLeft, max(0, screen.width - tw))
+val searchTop = (expectedCy - marginY - th / 2).coerceIn(0, max(0, screen.height - th))
+val searchBottom = (expectedCy + marginY - th / 2).coerceIn(searchTop, max(0, screen.height - th))
+​var bestScore = -1.0
+var bestX = expectedCx
+var bestY = expectedCy
+​val step = 3
+for (y in searchTop..searchBottom step step) {
+for (x in searchLeft..searchRight step step) {
+val score = scorePatchCenterWeighted(screen, tplBmp, x, y, sampleStep = 2)
+if (score > bestScore) {
+bestScore = score
+bestX = x
+bestY = y
+}
+}
+}
+​val fineLeft = (bestX - step).coerceAtLeast(searchLeft)
+val fineRight = (bestX + step).coerceAtMost(searchRight)
+val fineTop = (bestY - step).coerceAtLeast(searchTop)
+val fineBottom = (bestY + step).coerceAtMost(searchBottom)
+​for (y in fineTop..fineBottom) {
+for (x in fineLeft..fineRight) {
+val score = scorePatchCenterWeighted(screen, tplBmp, x, y, sampleStep = 1)
+if (score > bestScore) {
+bestScore = score
+bestX = x
+bestY = y
+}
+}
+}
+​val centerPxX = bestX + tw / 2
+val centerPxY = bestY + th / 2
+val normX = centerPxX.toFloat() / screen.width
+val normY = centerPxY.toFloat() / screen.height
+val matched = bestScore >= minConfidence
+​val reason = if (matched) {
+"Matched '{template.name}' at ({centerPxX}, {centerPxY}) conf={"%.3f".format(bestScore)}"
+} else {
+"Confidence too low for '{template.name}': best={"%.3f".format(bestScore)} < required=${"%.2f".format(minConfidence)}"
+}
+​return MatchResult(
+found = matched,
+confidence = bestScore,
+centerNormX = normX,
+centerNormY = normY,
+matchPixelX = centerPxX,
+matchPixelY = centerPxY,
+reason = reason
+)
+}
+​private fun scorePatchCenterWeighted(
+screen: Bitmap,
+tpl: Bitmap,
+startX: Int,
+startY: Int,
+sampleStep: Int
+): Double {
+val tw = tpl.width
+val th = tpl.height
+val innerXMin = tw / 4
+val innerXMax = (tw * 3) / 4
+val innerYMin = th / 4
+val innerYMax = (th * 3) / 4
+​var weightedDiffSum = 0.0
+var totalWeight = 0.0
+​for (ty in 0 until th step sampleStep) {
+for (tx in 0 until tw step sampleStep) {
+val sp = screen.getPixel(startX + tx, startY + ty)
+val tp = tpl.getPixel(tx, ty)
+​val dr = abs(Color.red(sp) - Color.red(tp))
+val dg = abs(Color.green(sp) - Color.green(tp))
+val db = abs(Color.blue(sp) - Color.blue(tp))
+val pixelDiff = (dr + dg + db) / (255.0 * 3.0)
+​val isInnerGlyph = tx in innerXMin..innerXMax && ty in innerYMin..innerYMax
+val weight = if (isInnerGlyph) 3.0 else 1.0
+​weightedDiffSum += pixelDiff * weight
+totalWeight += weight
+}
+}
+​if (totalWeight == 0.0) return 0.0
+return (1.0 - (weightedDiffSum / totalWeight)).coerceIn(0.0, 1.0)
+}
+​fun computeScreenTransitionScore(before: Bitmap, after: Bitmap): Double {
+if (before.width != after.width || before.height != after.height) return 1.0
+val startY = (before.height * 0.10).toInt()
+val endY = (before.height * 0.92).toInt()
+val step = 8
+​var changedPixels = 0
+var totalSampled = 0
+​for (y in startY until endY step step) {
+for (x in 0 until before.width step step) {
+val p1 = before.getPixel(x, y)
+val p2 = after.getPixel(x, y)
+val diff = abs(Color.red(p1) - Color.red(p2)) +
+abs(Color.green(p1) - Color.green(p2)) +
+abs(Color.blue(p1) - Color.blue(p2))
+if (diff > 45) {
+changedPixels++
+}
+totalSampled++
+}
+}
+return if (totalSampled == 0) 0.0 else changedPixels.toDouble() / totalSampled
+}
+​fun saveDiagnosticScreenshot(context: Context, bmp: Bitmap, tag: String): String {
+val dir = File(context.filesDir, DIAG_DIR).apply { mkdirs() }
+val file = File(dir, "${System.currentTimeMillis()}_$tag.png")
+FileOutputStream(file).use { out ->
+bmp.compress(Bitmap.CompressFormat.PNG, 90, out)
+}
+return file.absolutePath
+}
+}
+"""
+​files["app/src/main/java/com/styxy/bot/StyxyAccessibilityService.kt"] = """
+package com.styxy.bot
+​import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.Path
+import android.graphics.PixelFormat
+import android.graphics.drawable.GradientDrawable
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.util.DisplayMetrics
+import android.view.Display
+import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
+import android.view.WindowManager
+import android.view.accessibility.AccessibilityEvent
+import android.widget.Button
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.TextView
+import kotlinx.coroutines.*
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.concurrent.Executors
+import kotlin.coroutines.resume
+import kotlin.random.Random
+​enum class BotState {
+IDLE,
+CALIBRATING,
+CAPTURING_SCREEN,
+MATCHING_CONTROL,
+DISPATCHING_TAP,
+VERIFYING_TRANSITION,
+WORLD_MAP,
+SEARCH_MENU,
+TROOP_SELECTION,
+VIGILANTE_WARNING,
+PAUSED,
+STOPPED,
+ERROR
+}
+​class StyxyAccessibilityService : AccessibilityService() {
+​companion object {
+@Volatile
+var instance: StyxyAccessibilityService? = null
+private set
+​const val PRIMARY_TARGET_KEY = "mafia_city_primary_control"
+val logs = mutableListOf<String>()
+​fun logEvent(
+state: BotState,
+confidence: Double,
+action: String,
+dispatched: Boolean,
+verified: Boolean,
+detail: String
+) {
+val ts = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
+val entry = "[$ts] STATE=state \vert{} CONF={"%.2f".format(confidence)} | " +
+"ACT=$action \vert{} SENT=$dispatched | VERIFIED=$verified \vert{}$detail"
+synchronized(logs) {
+logs.add(0, entry)
+if (logs.size > 200) logs.removeAt(logs.lastIndex)
+}
+}
+}
+​private lateinit var windowManager: WindowManager
+private var controlPillView: View? = null
+private var calibrationReticleView: View? = null
+private var statusTextView: TextView? = null
+​private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+private var activeJob: Job? = null
+private val screenshotExecutor = Executors.newSingleThreadExecutor()
+​@Volatile
+var currentState: BotState = BotState.IDLE
+private set
+​@Volatile
+var lastActionText: String = "None"
+private set
+​@Volatile
+var lastErrorText: String = "None"
+private set
+​@Volatile
+var verifiedTapCount: Int = 0
+private set
+​private var reticleNormX = 0.10f
+private var reticleNormY = 0.88f
+​override fun onServiceConnected() {
+super.onServiceConnected()
+instance = this
+windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+createFloatingControlPill()
+updateState(BotState.IDLE, "Service connected & overlay ready")
+logEvent(BotState.IDLE, 1.0, "SERVICE_START", false, true, "Accessibility overlay attached")
+}
+​override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+​override fun onInterrupt() {
+emergencyStop("Android system interrupted AccessibilityService")
+}
+​override fun onDestroy() {
+emergencyStop("Service destroyed")
+removeOverlays()
+instance = null
+super.onDestroy()
+}
+​fun emergencyStop(reason: String = "User pressed STOP") {
+activeJob?.cancel()
+activeJob = null
+hideCalibrationReticle()
+currentState = BotState.STOPPED
+lastActionText = "HALTED"
+lastErrorText = reason
+updateOverlayStatus("STOPPED: $reason")
+logEvent(BotState.STOPPED, 0.0, "EMERGENCY_STOP", false, true, reason)
+}
+​private fun updateState(newState: BotState, statusMsg: String) {
+currentState = newState
+lastActionText = statusMsg
+updateOverlayStatus("${newState.name}:$statusMsg")
+}
+​private fun updateOverlayStatus(text: String) {
+Handler(Looper.getMainLooper()).post {
+statusTextView?.text = "STYXY [$verifiedTapCount] \vert{}$text"
+}
+}
+​private fun createFloatingControlPill() {
+if (controlPillView != null) return
+​val container = LinearLayout(this).apply {
+orientation = LinearLayout.VERTICAL
+setPadding(24, 18, 24, 18)
+background = GradientDrawable().apply {
+setColor(Color.parseColor("#DD141824"))
+cornerRadius = 28f
+setStroke(3, Color.parseColor("#00E676"))
+}
+}
+​statusTextView = TextView(this).apply {
+text = "STYXY [0] | IDLE (Drag Me)"
+setTextColor(Color.WHITE)
+textSize = 11f
+setPadding(0, 0, 0, 10)
+}
+container.addView(statusTextView)
+​val buttonRow = LinearLayout(this).apply {
+orientation = LinearLayout.HORIZONTAL
+}
+​fun makeBtn(label: String, bgHex: String, onClick: () -> Unit): Button {
+return Button(this).apply {
+text = label
+textSize = 10f
+setTextColor(Color.WHITE)
+minimumWidth = 0
+minWidth = 0
+minimumHeight = 0
+minHeight = 0
+setPadding(20, 12, 20, 12)
+background = GradientDrawable().apply {
+setColor(Color.parseColor(bgHex))
+cornerRadius = 16f
+}
+val lp = LinearLayout.LayoutParams(
+LinearLayout.LayoutParams.WRAP_CONTENT,
+LinearLayout.LayoutParams.WRAP_CONTENT
+).apply { setMargins(6, 0, 6, 0) }
+layoutParams = lp
+setOnClickListener { onClick() }
+}
+}
+​val btnCalibrate = makeBtn("1. Teach Icon", "#1E88E5") {
+toggleCalibrationMode()
+}
+val btnTestTap = makeBtn("2. Test 1 Tap", "#43A047") {
+executeVerifiedSingleTapTest()
+}
+val btnStop = makeBtn("STOP", "#E53935") {
+emergencyStop("Hard STOP pressed on overlay")
+}
+​buttonRow.addView(btnCalibrate)
+buttonRow.addView(btnTestTap)
+buttonRow.addView(btnStop)
+container.addView(buttonRow)
+​val params = WindowManager.LayoutParams(
+WindowManager.LayoutParams.WRAP_CONTENT,
+WindowManager.LayoutParams.WRAP_CONTENT,
+WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+PixelFormat.TRANSLUCENT
+).apply {
+gravity = Gravity.TOP or Gravity.START
+x = 40
+y = 140
+}
+​statusTextView?.setOnTouchListener(object : View.OnTouchListener {
+private var initialX = 0
+private var initialY = 0
+private var touchX = 0f
+private var touchY = 0f
+​override fun onTouch(v: View, event: MotionEvent): Boolean {
+when (event.action) {
+MotionEvent.ACTION_DOWN -> {
+initialX = params.x
+initialY = params.y
+touchX = event.rawX
+touchY = event.rawY
+return true
+}
+MotionEvent.ACTION_MOVE -> {
+params.x = initialX + (event.rawX - touchX).toInt()
+params.y = initialY + (event.rawY - touchY).toInt()
+windowManager.updateViewLayout(container, params)
+return true
+}
+}
+return false
+}
+})
+​controlPillView = container
+windowManager.addView(container, params)
+}
+​private fun toggleCalibrationMode() {
+if (calibrationReticleView != null) {
+saveCurrentReticleAsTemplate()
+return
+}
+​updateState(BotState.CALIBRATING, "Drag gold box over target icon, then tap '1. Teach Icon' again")
+​val metrics = getPhysicalDisplayMetrics()
+val boxSize = 120
+​val reticle = FrameLayout(this).apply {
+background = GradientDrawable().apply {
+setColor(Color.parseColor("#33FFD600"))
+setStroke(5, Color.parseColor("#FFD600"))
+cornerRadius = 12f
+}
+}
+​val label = TextView(this).apply {
+text = "DRAG ME\nOVER ICON"
+textSize = 9f
+setTextColor(Color.YELLOW)
+gravity = Gravity.CENTER
+}
+reticle.addView(label, FrameLayout.LayoutParams(boxSize, boxSize, Gravity.CENTER))
+​val startX = (reticleNormX * metrics.widthPixels - boxSize / 2).toInt()
+val startY = (reticleNormY * metrics.heightPixels - boxSize / 2).toInt()
+​val params = WindowManager.LayoutParams(
+boxSize,
+boxSize,
+WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+PixelFormat.TRANSLUCENT
+).apply {
+gravity = Gravity.TOP or Gravity.START
+x = startX
+y = startY
+}
+​reticle.setOnTouchListener(object : View.OnTouchListener {
+private var initX = 0
+private var initY = 0
+private var downRawX = 0f
+private var downRawY = 0f
+​override fun onTouch(v: View, event: MotionEvent): Boolean {
+when (event.action) {
+MotionEvent.ACTION_DOWN -> {
+initX = params.x
+initY = params.y
+downRawX = event.rawX
+downRawY = event.rawY
+return true
+}
+MotionEvent.ACTION_MOVE -> {
+params.x = initX + (event.rawX - downRawX).toInt()
+params.y = initY + (event.rawY - downRawY).toInt()
+windowManager.updateViewLayout(reticle, params)
+​val dm = getPhysicalDisplayMetrics()
+reticleNormX = (params.x + boxSize / 2f) / dm.widthPixels
+reticleNormY = (params.y + boxSize / 2f) / dm.heightPixels
+return true
+}
+}
+return false
+}
+})
+​calibrationReticleView = reticle
+windowManager.addView(reticle, params)
+}
+​private fun saveCurrentReticleAsTemplate() {
+activeJob?.cancel()
+activeJob = serviceScope.launch {
+hideCalibrationReticle()
+controlPillView?.visibility = View.INVISIBLE
+delay(220)
+​val screenBmp = captureHardwareScreen()
+controlPillView?.visibility = View.VISIBLE
+​if (screenBmp == null) {
+lastErrorText = "Screenshot failed during calibration"
+updateState(BotState.ERROR, lastErrorText)
+return@launch
+}
+​val saved = VisionEngine.saveTemplate(
+context = this@StyxyAccessibilityService,
+name = PRIMARY_TARGET_KEY,
+fullScreen = screenBmp,
+centerNormX = reticleNormX,
+centerNormY = reticleNormY,
+boxSizePx = 110
+)
+updateState(
+BotState.IDLE,
+"Saved icon at ({(saved.expectedNormX * 100).toInt()}\%,{(saved.expectedNormY * 100).toInt()}%)"
+)
+logEvent(
+BotState.IDLE,
+1.0,
+"CALIBRATE_SAVE",
+false,
+true,
+"Saved template '{saved.name}' norm=({saved.expectedNormX},${saved.expectedNormY})"
+)
+}
+}
+​private fun hideCalibrationReticle() {
+calibrationReticleView?.let {
+try {
+windowManager.removeView(it)
+} catch (_: Exception) {}
+}
+calibrationReticleView = null
+}
+​fun executeVerifiedSingleTapTest() {
+activeJob?.cancel()
+activeJob = serviceScope.launch {
+try {
+hideCalibrationReticle()
+val template = VisionEngine.loadTemplate(this@StyxyAccessibilityService, PRIMARY_TARGET_KEY)
+if (template == null) {
+lastErrorText = "No icon calibrated yet! Tap '1. Teach Icon' first."
+updateState(BotState.ERROR, lastErrorText)
+logEvent(BotState.ERROR, 0.0, "TEST_TAP", false, false, lastErrorText)
+return@launch
+}
+​updateState(BotState.CAPTURING_SCREEN, "Capturing pre-tap screen...")
+controlPillView?.visibility = View.INVISIBLE
+delay(180)
+val beforeBmp = captureHardwareScreen()
+controlPillView?.visibility = View.VISIBLE
+​if (beforeBmp == null) {
+lastErrorText = "takeScreenshot() returned null"
+updateState(BotState.ERROR, lastErrorText)
+logEvent(BotState.ERROR, 0.0, "CAPTURE", false, false, lastErrorText)
+return@launch
+}
+​updateState(BotState.MATCHING_CONTROL, "Matching calibrated control...")
+val match = withContext(Dispatchers.Default) {
+VisionEngine.findTemplateInROI(
+screen = beforeBmp,
+template = template,
+roiMarginNorm = 0.08f,
+minConfidence = 0.82
+)
+}
+​if (!match.found) {
+lastErrorText = match.reason
+VisionEngine.saveDiagnosticScreenshot(this@StyxyAccessibilityService, beforeBmp, "match_fail")
+updateState(BotState.ERROR, "Match failed (${"%.2f".format(match.confidence)})")
+logEvent(BotState.ERROR, match.confidence, "MATCH_FAIL", false, false, match.reason)
+return@launch
+}
+​val metrics = getPhysicalDisplayMetrics()
+val jitterX = Random.nextInt(-3, 4)
+val jitterY = Random.nextInt(-3, 4)
+val tapX = (match.centerNormX * metrics.widthPixels + jitterX)
+.coerceIn(10f, metrics.widthPixels - 10f)
+val tapY = (match.centerNormY * metrics.heightPixels + jitterY)
+.coerceIn(10f, metrics.heightPixels - 10f)
+​updateState(
+BotState.DISPATCHING_TAP,
+"Tapping (${tapX.toInt()}, {tapY.toInt()}) conf={"%.2f".format(match.confidence)}"
+)
+​showTapMarkerDot(tapX.toInt(), tapY.toInt())
+val dispatched = dispatchReliableTap(tapX, tapY, durationMs = Random.nextLong(75L, 105L))
+​if (!dispatched) {
+lastErrorText = "OS rejected dispatchGesture()"
+updateState(BotState.ERROR, lastErrorText)
+logEvent(BotState.ERROR, match.confidence, "TAP_DISPATCH", false, false, lastErrorText)
+return@launch
+}
+​updateState(BotState.VERIFYING_TRANSITION, "Waiting 950ms to verify screen transition...")
+delay(950)
+​controlPillView?.visibility = View.INVISIBLE
+delay(160)
+val afterBmp = captureHardwareScreen()
+controlPillView?.visibility = View.VISIBLE
+​if (afterBmp == null) {
+lastErrorText = "Post-tap verification screenshot failed"
+updateState(BotState.ERROR, lastErrorText)
+return@launch
+}
+​val transitionScore = withContext(Dispatchers.Default) {
+VisionEngine.computeScreenTransitionScore(beforeBmp, afterBmp)
+}
+​val postMatch = withContext(Dispatchers.Default) {
+VisionEngine.findTemplateInROI(afterBmp, template, roiMarginNorm = 0.04f, minConfidence = 0.85)
+}
+​val transitionVerified = (transitionScore >= 0.035) || !postMatch.found
+​if (transitionVerified) {
+verifiedTapCount++
+lastErrorText = "None"
+val msg = "VERIFIED! Screen delta={"%.1f".format(transitionScore * 100)}%"
+updateState(BotState.IDLE, msg)
+logEvent(BotState.IDLE, match.confidence, "TAP_SUCCESS", true, true, msg)
+} else {
+lastErrorText = "Tap sent, but screen did not change (delta={"%.1f".format(transitionScore * 100)}%)"
+VisionEngine.saveDiagnosticScreenshot(this@StyxyAccessibilityService, afterBmp, "no_transition")
+updateState(BotState.ERROR, lastErrorText)
+logEvent(BotState.ERROR, match.confidence, "VERIFY_FAIL", true, false, lastErrorText)
+}
+​} catch (e: CancellationException) {
+logEvent(BotState.STOPPED, 0.0, "CANCELLED", false, false, "Routine cancelled safely")
+} catch (e: Exception) {
+lastErrorText = "Exception: ${e.message}"
+updateState(BotState.ERROR, lastErrorText)
+logEvent(BotState.ERROR, 0.0, "EXCEPTION", false, false, e.stackTraceToString().take(250))
+}
+}
+}
+​private suspend fun captureHardwareScreen(): Bitmap? = suspendCancellableCoroutine { cont ->
+if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+cont.resume(null)
+return@suspendCancellableCoroutine
+}
+takeScreenshot(
+Display.DEFAULT_DISPLAY,
+screenshotExecutor,
+object : TakeScreenshotCallback {
+override fun onSuccess(screenshot: ScreenshotResult) {
+try {
+val hwBuffer = screenshot.hardwareBuffer
+val colorSpace = screenshot.colorSpace
+val wrapped = Bitmap.wrapHardwareBuffer(hwBuffer, colorSpace)
+val softBmp = wrapped?.copy(Bitmap.Config.ARGB_8888, false)
+wrapped?.recycle()
+hwBuffer.close()
+if (cont.isActive) cont.resume(softBmp)
+} catch (e: Exception) {
+if (cont.isActive) cont.resume(null)
+}
+}
+​override fun onFailure(errorCode: Int) {
+lastErrorText = "takeScreenshot failed with code=$errorCode"
+if (cont.isActive) cont.resume(null)
+}
+}
+)
+}
+​private suspend fun dispatchReliableTap(x: Float, y: Float, durationMs: Long): Boolean =
+suspendCancellableCoroutine { cont ->
+val path = Path().apply { moveTo(x, y) }
+val stroke = GestureDescription.StrokeDescription(path, 0L, durationMs)
+val gesture = GestureDescription.Builder().addStroke(stroke).build()
+​val accepted = dispatchGesture(
+gesture,
+object : GestureResultCallback() {
+override fun onCompleted(gestureDescription: GestureDescription?) {
+if (cont.isActive) cont.resume(true)
+}
+​override fun onCancelled(gestureDescription: GestureDescription?) {
+if (cont.isActive) cont.resume(false)
+}
+},
+null
+)
+if (!accepted && cont.isActive) {
+cont.resume(false)
+}
+}
+​private fun showTapMarkerDot(pxX: Int, pxY: Int) {
+Handler(Looper.getMainLooper()).post {
+val size = 36
+val dot = View(this).apply {
+background = GradientDrawable().apply {
+shape = GradientDrawable.OVAL
+setColor(Color.parseColor("#8800E676"))
+setStroke(4, Color.WHITE)
+}
+}
+val params = WindowManager.LayoutParams(
+size,
+size,
+WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+PixelFormat.TRANSLUCENT
+).apply {
+gravity = Gravity.TOP or Gravity.START
+x = pxX - size / 2
+y = pxY - size / 2
+}
+try {
+windowManager.addView(dot, params)
+Handler(Looper.getMainLooper()).postDelayed({
+try {
+windowManager.removeView(dot)
+} catch (: Exception) {}
+}, 650)
+} catch (: Exception) {}
+}
+}
+​private fun getPhysicalDisplayMetrics(): DisplayMetrics {
+val dm = DisplayMetrics()
+@Suppress("DEPRECATION")
+windowManager.defaultDisplay.getRealMetrics(dm)
+return dm
+}
+​private fun removeOverlays() {
+hideCalibrationReticle()
+controlPillView?.let {
+try {
+windowManager.removeView(it)
+} catch (_: Exception) {}
+}
+controlPillView = null
+}
+}
+"""
+​files["app/src/main/java/com/styxy/bot/MainActivity.kt"] = """
+package com.styxy.bot
+​import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.graphics.Color
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
+import android.view.Gravity
+import android.widget.*
+import androidx.appcompat.app.AppCompatActivity
+​class MainActivity : AppCompatActivity() {
+​private lateinit var tvServiceStatus: TextView
+private lateinit var tvStateInfo: TextView
+private lateinit var tvLogOutput: TextView
+private val uiHandler = Handler(Looper.getMainLooper())
+​private val refreshRunnable = object : Runnable {
+override fun run() {
+refreshDashboard()
+uiHandler.postDelayed(this, 600)
+}
+}
+​override fun onCreate(savedInstanceState: Bundle?) {
+super.onCreate(savedInstanceState)
+​val rootScroll = ScrollView(this).apply {
+setBackgroundColor(Color.parseColor("#0F121C"))
+}
+​val layout = LinearLayout(this).apply {
+orientation = LinearLayout.VERTICAL
+setPadding(40, 60, 40, 60)
+}
+​val title = TextView(this).apply {
+text = "STYXY BOT v2.0 (Milestone 1)"
+textSize = 22f
+setTextColor(Color.parseColor("#00E676"))
+setPadding(0, 0, 0, 16)
+}
+layout.addView(title)
+​tvServiceStatus = TextView(this).apply {
+textSize = 14f
+setTextColor(Color.WHITE)
+setPadding(0, 0, 0, 20)
+}
+layout.addView(tvServiceStatus)
+​val btnEnableService = Button(this).apply {
+text = "Open Android Accessibility Settings"
+setOnClickListener {
+startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+}
+}
+layout.addView(btnEnableService)
+​tvStateInfo = TextView(this).apply {
+textSize = 13f
+setTextColor(Color.parseColor("#B0BEC5"))
+setPadding(0, 24, 0, 24)
+}
+layout.addView(tvStateInfo)
+​val rowControls = LinearLayout(this).apply {
+orientation = LinearLayout.HORIZONTAL
+gravity = Gravity.CENTER_HORIZONTAL
+}
+​val btnTestTap = Button(this).apply {
+text = "Test 1 Tap (In-Game)"
+setOnClickListener {
+StyxyAccessibilityService.instance?.executeVerifiedSingleTapTest()
+?: Toast.makeText(context, "Enable STYXY Accessibility Service first!", Toast.LENGTH_SHORT).show()
+}
+}
+​val btnStop = Button(this).apply {
+text = "EMERGENCY STOP"
+setBackgroundColor(Color.parseColor("#C62828"))
+setTextColor(Color.WHITE)
+setOnClickListener {
+StyxyAccessibilityService.instance?.emergencyStop("Stopped from Dashboard")
+}
+}
+​rowControls.addView(btnTestTap)
+rowControls.addView(btnStop)
+layout.addView(rowControls)
+​val btnCopyLogs = Button(this).apply {
+text = "Copy Diagnostic Logs to Clipboard"
+setOnClickListener {
+val logDump = synchronized(StyxyAccessibilityService.logs) {
+StyxyAccessibilityService.logs.joinToString("\n")
+}
+val cb = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+cb.setPrimaryClip(ClipData.newPlainText("STYXY_LOGS", logDump.ifEmpty { "No logs yet." }))
+Toast.makeText(context, "Diagnostic logs copied!", Toast.LENGTH_SHORT).show()
+}
+}
+layout.addView(btnCopyLogs)
+​val logHeader = TextView(this).apply {
+text = "LIVE DIAGNOSTIC TELEMETRY:"
+textSize = 14f
+setTextColor(Color.parseColor("#FFD600"))
+setPadding(0, 28, 0, 12)
+}
+layout.addView(logHeader)
+​tvLogOutput = TextView(this).apply {
+textSize = 11f
+setTextColor(Color.parseColor("#E0E0E0"))
+setBackgroundColor(Color.parseColor("#1B2030"))
+setPadding(24, 24, 24, 24)
+}
+layout.addView(tvLogOutput)
+​rootScroll.addView(layout)
+setContentView(rootScroll)
+}
+​override fun onResume() {
+super.onResume()
+uiHandler.post(refreshRunnable)
+}
+​override fun onPause() {
+uiHandler.removeCallbacks(refreshRunnable)
+super.onPause()
+}
+​private fun refreshDashboard() {
+val svc = StyxyAccessibilityService.instance
+if (svc == null) {
+tvServiceStatus.text = "SERVICE STATUS: DISCONNECTED (Tap button below to enable)"
+tvServiceStatus.setTextColor(Color.parseColor("#FF5252"))
+tvStateInfo.text = "Daily Target: 200 | Verified Actions: 0/200\nCurrent State: SERVICE_OFF"
+} else {
+tvServiceStatus.text = "SERVICE STATUS: ACTIVE & FLOATING OVERLAY READY"
+tvServiceStatus.setTextColor(Color.parseColor("#00E676"))
+tvStateInfo.text = buildString {
+appendLine("Daily Target: 200 | Verified Actions: ${svc.verifiedTapCount}/200")
+appendLine("Current State: ${svc.currentState}")
+appendLine("Last Action: ${svc.lastActionText}")
+append("Last Error: ${svc.lastErrorText}")
+}
+}
+​val logText = synchronized(StyxyAccessibilityService.logs) {
+if (StyxyAccessibilityService.logs.isEmpty()) "Waiting for actions..."
+else StyxyAccessibilityService.logs.take(30).joinToString("\n\n")
+}
+tvLogOutput.text = logText
+}
+}
+"""
+​import textwrap
+for rel_path, content in files.items():
+p = pathlib.Path(rel_path)
+p.parent.mkdir(parents=True, exist_ok=True)
+clean_content = textwrap.dedent(content).strip() + "\n"
+p.write_text(clean_content, encoding="utf-8")
+print(f"Wrote {rel_path}")
+​- name: Commit Generated Android Files to Repository
+run: |
+git config user.name "github-actions[bot]"
+git config user.email "github-actions[bot]@users.noreply.github.com"
+git add .
+if ! git diff --cached --quiet; then
+git commit -m "Initialize STYXY Bot v2 Milestone 1 Android project [skip ci]"
+git push
+fi
+​- name: Set up JDK 17
+uses: actions/setup-java@v4
+with:
+java-version: '17'
+distribution: 'temurin'
+​- name: Setup Android SDK
+uses: android-actions/setup-android@v3
+​- name: Setup Gradle 8.9
+uses: gradle/actions/setup-gradle@v4
+with:
+gradle-version: '8.9'
+​- name: Build Debug APK
+run: gradle assembleDebug --stacktrace
+​- name: Upload Installable STYXY Bot APK
+uses: actions/upload-artifact@v4
+with:
+name: STYXY-Bot-Milestone1-APK
+path: app/build/outputs/apk/debug/app-debug.apk
+if-no-files-found: error totalSampled = 0
+​for (y in startY until endY step step) {
+for (x in 0 until before.width step step) {
+val p1 = before.getPixel(x, y)
+val p2 = after.getPixel(x, y)
+val diff = abs(Color.red(p1) - Color.red(p2)) +
+abs(Color.green(p1) - Color.green(p2)) +
+abs(Color.blue(p1) - Color.blue(p2))
+if (diff > 45) {
+changedPixels++
+}
+totalSampled++
+}
+}
+return if (totalSampled == 0) 0.0 else changedPixels.toDouble() / totalSampled
+}
+​fun saveDiagnosticScreenshot(context: Context, bmp: Bitmap, tag: String): String {
+val dir = File(context.filesDir, DIAG_DIR).apply { mkdirs() }
+val file = File(dir, "${System.currentTimeMillis()}_$tag.png")
+FileOutputStream(file).use { out ->
+bmp.compress(Bitmap.CompressFormat.PNG, 90, out)
+}
+return file.absolutePath
+}
+}
+"""
+​files["app/src/main/java/com/styxy/bot/StyxyAccessibilityService.kt"] = """
+package com.styxy.bot
+​import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.Path
+import android.graphics.PixelFormat
+import android.graphics.drawable.GradientDrawable
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.util.DisplayMetrics
+import android.view.Display
+import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
+import android.view.WindowManager
+import android.view.accessibility.AccessibilityEvent
+import android.widget.Button
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.TextView
+import kotlinx.coroutines.*
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.concurrent.Executors
+import kotlin.coroutines.resume
+import kotlin.random.Random
+​enum class BotState {
+IDLE,
+CALIBRATING,
+CAPTURING_SCREEN,
+MATCHING_CONTROL,
+DISPATCHING_TAP,
+VERIFYING_TRANSITION,
+WORLD_MAP,
+SEARCH_MENU,
+TROOP_SELECTION,
+VIGILANTE_WARNING,
+PAUSED,
+STOPPED,
+ERROR
+}
+​class StyxyAccessibilityService : AccessibilityService() {
+​companion object {
+@Volatile
+var instance: StyxyAccessibilityService? = null
+private set
+​const val PRIMARY_TARGET_KEY = "mafia_city_primary_control"
+val logs = mutableListOf<String>()
+​fun logEvent(
+state: BotState,
+confidence: Double,
+action: String,
+dispatched: Boolean,
+verified: Boolean,
+detail: String
+) {
+val ts = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
+val entry = "[$ts] STATE=state \vert{} CONF={"%.2f".format(confidence)} | " +
+"ACT=$action \vert{} SENT=$dispatched | VERIFIED=$verified \vert{}$detail"
+synchronized(logs) {
+logs.add(0, entry)
+if (logs.size > 200) logs.removeAt(logs.lastIndex)
+}
+}
+}
+​private lateinit var windowManager: WindowManager
+private var controlPillView: View? = null
+private var calibrationReticleView: View? = null
+private var statusTextView: TextView? = null
+​private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+private var activeJob: Job? = null
+private val screenshotExecutor = Executors.newSingleThreadExecutor()
+​@Volatile
+var currentState: BotState = BotState.IDLE
+private set
+​@Volatile
+var lastActionText: String = "None"
+private set
+​@Volatile
+var lastErrorText: String = "None"
+private set
+​@Volatile
+var verifiedTapCount: Int = 0
+private set
+​private var reticleNormX = 0.10f
+private var reticleNormY = 0.88f
+​override fun onServiceConnected() {
+super.onServiceConnected()
+instance = this
+windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+createFloatingControlPill()
+updateState(BotState.IDLE, "Service connected & overlay ready")
+logEvent(BotState.IDLE, 1.0, "SERVICE_START", false, true, "Accessibility overlay attached")
+}
+​override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+​override fun onInterrupt() {
+emergencyStop("Android system interrupted AccessibilityService")
+}
+​override fun onDestroy() {
+emergencyStop("Service destroyed")
+removeOverlays()
+instance = null
+super.onDestroy()
+}
+​fun emergencyStop(reason: String = "User pressed STOP") {
+activeJob?.cancel()
+activeJob = null
+hideCalibrationReticle()
+currentState = BotState.STOPPED
+lastActionText = "HALTED"
+lastErrorText = reason
+updateOverlayStatus("STOPPED: $reason")
+logEvent(BotState.STOPPED, 0.0, "EMERGENCY_STOP", false, true, reason)
+}
+​private fun updateState(newState: BotState, statusMsg: String) {
+currentState = newState
+lastActionText = statusMsg
+updateOverlayStatus("${newState.name}:$statusMsg")
+}
+​private fun updateOverlayStatus(text: String) {
+Handler(Looper.getMainLooper()).post {
+statusTextView?.text = "STYXY [$verifiedTapCount] \vert{}$text"
+}
+}
+​private fun createFloatingControlPill() {
+if (controlPillView != null) return
+​val container = LinearLayout(this).apply {
+orientation = LinearLayout.VERTICAL
+setPadding(24, 18, 24, 18)
+background = GradientDrawable().apply {
+setColor(Color.parseColor("#DD141824"))
+cornerRadius = 28f
+setStroke(3, Color.parseColor("#00E676"))
+}
+}
+​statusTextView = TextView(this).apply {
+text = "STYXY [0] | IDLE (Drag Me)"
+setTextColor(Color.WHITE)
+textSize = 11f
+setPadding(0, 0, 0, 10)
+}
+container.addView(statusTextView)
+​val buttonRow = LinearLayout(this).apply {
+orientation = LinearLayout.HORIZONTAL
+}
+​fun makeBtn(label: String, bgHex: String, onClick: () -> Unit): Button {
+return Button(this).apply {
+text = label
+textSize = 10f
+setTextColor(Color.WHITE)
+minimumWidth = 0
+minWidth = 0
+minimumHeight = 0
+minHeight = 0
+setPadding(20, 12, 20, 12)
+background = GradientDrawable().apply {
+setColor(Color.parseColor(bgHex))
+cornerRadius = 16f
+}
+val lp = LinearLayout.LayoutParams(
+LinearLayout.LayoutParams.WRAP_CONTENT,
+LinearLayout.LayoutParams.WRAP_CONTENT
+).apply { setMargins(6, 0, 6, 0) }
+layoutParams = lp
+setOnClickListener { onClick() }
+}
+}
+​val btnCalibrate = makeBtn("1. Teach Icon", "#1E88E5") {
+toggleCalibrationMode()
+}
+val btnTestTap = makeBtn("2. Test 1 Tap", "#43A047") {
+executeVerifiedSingleTapTest()
+}
+val btnStop = makeBtn("STOP", "#E53935") {
+emergencyStop("Hard STOP pressed on overlay")
+}
+​buttonRow.addView(btnCalibrate)
+buttonRow.addView(btnTestTap)
+buttonRow.addView(btnStop)
+container.addView(buttonRow)
+​val params = WindowManager.LayoutParams(
+WindowManager.LayoutParams.WRAP_CONTENT,
+WindowManager.LayoutParams.WRAP_CONTENT,
+WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+PixelFormat.TRANSLUCENT
+).apply {
+gravity = Gravity.TOP or Gravity.START
+x = 40
+y = 140
+}
+​statusTextView?.setOnTouchListener(object : View.OnTouchListener {
+private var initialX = 0
+private var initialY = 0
+private var touchX = 0f
+private var touchY = 0f
+​override fun onTouch(v: View, event: MotionEvent): Boolean {
+when (event.action) {
+MotionEvent.ACTION_DOWN -> {
+initialX = params.x
+initialY = params.y
+touchX = event.rawX
+touchY = event.rawY
+return true
+}
+MotionEvent.ACTION_MOVE -> {
+params.x = initialX + (event.rawX - touchX).toInt()
+params.y = initialY + (event.rawY - touchY).toInt()
+windowManager.updateViewLayout(container, params)
+return true
+}
+}
+return false
+}
+})
+​controlPillView = container
+windowManager.addView(container, params)
+}
+​private fun toggleCalibrationMode() {
+if (calibrationReticleView != null) {
+saveCurrentReticleAsTemplate()
+return
+}
+​updateState(BotState.CALIBRATING, "Drag gold box over target icon, then tap '1. Teach Icon' again")
+​val metrics = getPhysicalDisplayMetrics()
+val boxSize = 120
+​val reticle = FrameLayout(this).apply {
+background = GradientDrawable().apply {
+setColor(Color.parseColor("#33FFD600"))
+setStroke(5, Color.parseColor("#FFD600"))
+cornerRadius = 12f
+}
+}
+​val label = TextView(this).apply {
+text = "DRAG ME\nOVER ICON"
+textSize = 9f
+setTextColor(Color.YELLOW)
+gravity = Gravity.CENTER
+}
+reticle.addView(label, FrameLayout.LayoutParams(boxSize, boxSize, Gravity.CENTER))
+​val startX = (reticleNormX * metrics.widthPixels - boxSize / 2).toInt()
+val startY = (reticleNormY * metrics.heightPixels - boxSize / 2).toInt()
+​val params = WindowManager.LayoutParams(
+boxSize,
+boxSize,
+WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+PixelFormat.TRANSLUCENT
+).apply {
+gravity = Gravity.TOP or Gravity.START
+x = startX
+y = startY
+}
+​reticle.setOnTouchListener(object : View.OnTouchListener {
+private var initX = 0
+private var initY = 0
+private var downRawX = 0f
+private var downRawY = 0f
+​override fun onTouch(v: View, event: MotionEvent): Boolean {
+when (event.action) {
+MotionEvent.ACTION_DOWN -> {
+initX = params.x
+initY = params.y
+downRawX = event.rawX
+downRawY = event.rawY
+return true
+}
+MotionEvent.ACTION_MOVE -> {
+params.x = initX + (event.rawX - downRawX).toInt()
+params.y = initY + (event.rawY - downRawY).toInt()
+windowManager.updateViewLayout(reticle, params)
+​val dm = getPhysicalDisplayMetrics()
+reticleNormX = (params.x + boxSize / 2f) / dm.widthPixels
+reticleNormY = (params.y + boxSize / 2f) / dm.heightPixels
+return true
+}
+}
+return false
+}
+})
+​calibrationReticleView = reticle
+windowManager.addView(reticle, params)
+}
+​private fun saveCurrentReticleAsTemplate() {
+activeJob?.cancel()
+activeJob = serviceScope.launch {
+hideCalibrationReticle()
+controlPillView?.visibility = View.INVISIBLE
+delay(220)
+​val screenBmp = captureHardwareScreen()
+controlPillView?.visibility = View.VISIBLE
+​if (screenBmp == null) {
+lastErrorText = "Screenshot failed during calibration"
+updateState(BotState.ERROR, lastErrorText)
+return@launch
+}
+​val saved = VisionEngine.saveTemplate(
+context = this@StyxyAccessibilityService,
+name = PRIMARY_TARGET_KEY,
+fullScreen = screenBmp,
+centerNormX = reticleNormX,
+centerNormY = reticleNormY,
+boxSizePx = 110
+)
+updateState(
+BotState.IDLE,
+"Saved icon at ({(saved.expectedNormX * 100).toInt()}\%,{(saved.expectedNormY * 100).toInt()}%)"
+)
+logEvent(
+BotState.IDLE,
+1.0,
+"CALIBRATE_SAVE",
+false,
+true,
+"Saved template '{saved.name}' norm=({saved.expectedNormX},${saved.expectedNormY})"
+)
+}
+}
+​private fun hideCalibrationReticle() {
+calibrationReticleView?.let {
+try {
+windowManager.removeView(it)
+} catch (_: Exception) {}
+}
+calibrationReticleView = null
+}
+​fun executeVerifiedSingleTapTest() {
+activeJob?.cancel()
+activeJob = serviceScope.launch {
+try {
+hideCalibrationReticle()
+val template = VisionEngine.loadTemplate(this@StyxyAccessibilityService, PRIMARY_TARGET_KEY)
+if (template == null) {
+lastErrorText = "No icon calibrated yet! Tap '1. Teach Icon' first."
+updateState(BotState.ERROR, lastErrorText)
+logEvent(BotState.ERROR, 0.0, "TEST_TAP", false, false, lastErrorText)
+return@launch
+}
+​updateState(BotState.CAPTURING_SCREEN, "Capturing pre-tap screen...")
+controlPillView?.visibility = View.INVISIBLE
+delay(180)
+val beforeBmp = captureHardwareScreen()
+controlPillView?.visibility = View.VISIBLE
+​if (beforeBmp == null) {
+lastErrorText = "takeScreenshot() returned null"
+updateState(BotState.ERROR, lastErrorText)
+logEvent(BotState.ERROR, 0.0, "CAPTURE", false, false, lastErrorText)
+return@launch
+}
+​updateState(BotState.MATCHING_CONTROL, "Matching calibrated control...")
+val match = withContext(Dispatchers.Default) {
+VisionEngine.findTemplateInROI(
+screen = beforeBmp,
+template = template,
+roiMarginNorm = 0.08f,
+minConfidence = 0.82
+)
+}
+​if (!match.found) {
+lastErrorText = match.reason
+VisionEngine.saveDiagnosticScreenshot(this@StyxyAccessibilityService, beforeBmp, "match_fail")
+updateState(BotState.ERROR, "Match failed (${"%.2f".format(match.confidence)})")
+logEvent(BotState.ERROR, match.confidence, "MATCH_FAIL", false, false, match.reason)
+return@launch
+}
+​val metrics = getPhysicalDisplayMetrics()
+val jitterX = Random.nextInt(-3, 4)
+val jitterY = Random.nextInt(-3, 4)
+val tapX = (match.centerNormX * metrics.widthPixels + jitterX)
+.coerceIn(10f, metrics.widthPixels - 10f)
+val tapY = (match.centerNormY * metrics.heightPixels + jitterY)
+.coerceIn(10f, metrics.heightPixels - 10f)
+​updateState(
+BotState.DISPATCHING_TAP,
+"Tapping (${tapX.toInt()}, {tapY.toInt()}) conf={"%.2f".format(match.confidence)}"
+)
+​showTapMarkerDot(tapX.toInt(), tapY.toInt())
+val dispatched = dispatchReliableTap(tapX, tapY, durationMs = Random.nextLong(75L, 105L))
+​if (!dispatched) {
+lastErrorText = "OS rejected dispatchGesture()"
+updateState(BotState.ERROR, lastErrorText)
+logEvent(BotState.ERROR, match.confidence, "TAP_DISPATCH", false, false, lastErrorText)
+return@launch
+}
+​updateState(BotState.VERIFYING_TRANSITION, "Waiting 950ms to verify screen transition...")
+delay(950)
+​controlPillView?.visibility = View.INVISIBLE
+delay(160)
+val afterBmp = captureHardwareScreen()
+controlPillView?.visibility = View.VISIBLE
+​if (afterBmp == null) {
+lastErrorText = "Post-tap verification screenshot failed"
+updateState(BotState.ERROR, lastErrorText)
+return@launch
+}
+​val transitionScore = withContext(Dispatchers.Default) {
+VisionEngine.computeScreenTransitionScore(beforeBmp, afterBmp)
+}
+​val postMatch = withContext(Dispatchers.Default) {
+VisionEngine.findTemplateInROI(afterBmp, template, roiMarginNorm = 0.04f, minConfidence = 0.85)
+}
+​val transitionVerified = (transitionScore >= 0.035) || !postMatch.found
+​if (transitionVerified) {
+verifiedTapCount++
+lastErrorText = "None"
+val msg = "VERIFIED! Screen delta={"%.1f".format(transitionScore * 100)}%"
+updateState(BotState.IDLE, msg)
+logEvent(BotState.IDLE, match.confidence, "TAP_SUCCESS", true, true, msg)
+} else {
+lastErrorText = "Tap sent, but screen did not change (delta={"%.1f".format(transitionScore * 100)}%)"
+VisionEngine.saveDiagnosticScreenshot(this@StyxyAccessibilityService, afterBmp, "no_transition")
+updateState(BotState.ERROR, lastErrorText)
+logEvent(BotState.ERROR, match.confidence, "VERIFY_FAIL", true, false, lastErrorText)
+}
+​} catch (e: CancellationException) {
+logEvent(BotState.STOPPED, 0.0, "CANCELLED", false, false, "Routine cancelled safely")
+} catch (e: Exception) {
+lastErrorText = "Exception: ${e.message}"
+updateState(BotState.ERROR, lastErrorText)
+logEvent(BotState.ERROR, 0.0, "EXCEPTION", false, false, e.stackTraceToString().take(250))
+}
+}
+}
+​private suspend fun captureHardwareScreen(): Bitmap? = suspendCancellableCoroutine { cont ->
+if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+cont.resume(null)
+return@suspendCancellableCoroutine
+}
+takeScreenshot(
+Display.DEFAULT_DISPLAY,
+screenshotExecutor,
+object : TakeScreenshotCallback {
+override fun onSuccess(screenshot: ScreenshotResult) {
+try {
+val hwBuffer = screenshot.hardwareBuffer
+val colorSpace = screenshot.colorSpace
+val wrapped = Bitmap.wrapHardwareBuffer(hwBuffer, colorSpace)
+val softBmp = wrapped?.copy(Bitmap.Config.ARGB_8888, false)
+wrapped?.recycle()
+hwBuffer.close()
+if (cont.isActive) cont.resume(softBmp)
+} catch (e: Exception) {
+if (cont.isActive) cont.resume(null)
+}
+}
+​override fun onFailure(errorCode: Int) {
+lastErrorText = "takeScreenshot failed with code=$errorCode"
+if (cont.isActive) cont.resume(null)
+}
+}
+)
+}
+​private suspend fun dispatchReliableTap(x: Float, y: Float, durationMs: Long): Boolean =
+suspendCancellableCoroutine { cont ->
+val path = Path().apply { moveTo(x, y) }
+val stroke = GestureDescription.StrokeDescription(path, 0L, durationMs)
+val gesture = GestureDescription.Builder().addStroke(stroke).build()
+​val accepted = dispatchGesture(
+gesture,
+object : GestureResultCallback() {
+override fun onCompleted(gestureDescription: GestureDescription?) {
+if (cont.isActive) cont.resume(true)
+}
+​override fun onCancelled(gestureDescription: GestureDescription?) {
+if (cont.isActive) cont.resume(false)
+}
+},
+null
+)
+if (!accepted && cont.isActive) {
+cont.resume(false)
+}
+}
+​private fun showTapMarkerDot(pxX: Int, pxY: Int) {
+Handler(Looper.getMainLooper()).post {
+val size = 36
+val dot = View(this).apply {
+background = GradientDrawable().apply {
+shape = GradientDrawable.OVAL
+setColor(Color.parseColor("#8800E676"))
+setStroke(4, Color.WHITE)
+}
+}
+val params = WindowManager.LayoutParams(
+size,
+size,
+WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+PixelFormat.TRANSLUCENT
+).apply {
+gravity = Gravity.TOP or Gravity.START
+x = pxX - size / 2
+y = pxY - size / 2
+}
+try {
+windowManager.addView(dot, params)
+Handler(Looper.getMainLooper()).postDelayed({
+try {
+windowManager.removeView(dot)
+} catch (: Exception) {}
+}, 650)
+} catch (: Exception) {}
+}
+}
+​private fun getPhysicalDisplayMetrics(): DisplayMetrics {
+val dm = DisplayMetrics()
+@Suppress("DEPRECATION")
+windowManager.defaultDisplay.getRealMetrics(dm)
+return dm
+}
+​private fun removeOverlays() {
+hideCalibrationReticle()
+controlPillView?.let {
+try {
+windowManager.removeView(it)
+} catch (_: Exception) {}
+}
+controlPillView = null
+}
+}
+"""
+​files["app/src/main/java/com/styxy/bot/MainActivity.kt"] = """
+package com.styxy.bot
+​import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.graphics.Color
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
+import android.view.Gravity
+import android.widget.*
+import androidx.appcompat.app.AppCompatActivity
+​class MainActivity : AppCompatActivity() {
+​private lateinit var tvServiceStatus: TextView
+private lateinit var tvStateInfo: TextView
+private lateinit var tvLogOutput: TextView
+private val uiHandler = Handler(Looper.getMainLooper())
+​private val refreshRunnable = object : Runnable {
+override fun run() {
+refreshDashboard()
+uiHandler.postDelayed(this, 600)
+}
+}
+​override fun onCreate(savedInstanceState: Bundle?) {
+super.onCreate(savedInstanceState)
+​val rootScroll = ScrollView(this).apply {
+setBackgroundColor(Color.parseColor("#0F121C"))
+}
+​val layout = LinearLayout(this).apply {
+orientation = LinearLayout.VERTICAL
+setPadding(40, 60, 40, 60)
+}
+​val title = TextView(this).apply {
+text = "STYXY BOT v2.0 (Milestone 1)"
+textSize = 22f
+setTextColor(Color.parseColor("#00E676"))
+setPadding(0, 0, 0, 16)
+}
+layout.addView(title)
+​tvServiceStatus = TextView(this).apply {
+textSize = 14f
+setTextColor(Color.WHITE)
+setPadding(0, 0, 0, 20)
+}
+layout.addView(tvServiceStatus)
+​val btnEnableService = Button(this).apply {
+text = "Open Android Accessibility Settings"
+setOnClickListener {
+startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+}
+}
+layout.addView(btnEnableService)
+​tvStateInfo = TextView(this).apply {
+textSize = 13f
+setTextColor(Color.parseColor("#B0BEC5"))
+setPadding(0, 24, 0, 24)
+}
+layout.addView(tvStateInfo)
+​val rowControls = LinearLayout(this).apply {
+orientation = LinearLayout.HORIZONTAL
+gravity = Gravity.CENTER_HORIZONTAL
+}
+​val btnTestTap = Button(this).apply {
+text = "Test 1 Tap (In-Game)"
+setOnClickListener {
+StyxyAccessibilityService.instance?.executeVerifiedSingleTapTest()
+?: Toast.makeText(context, "Enable STYXY Accessibility Service first!", Toast.LENGTH_SHORT).show()
+}
+}
+​val btnStop = Button(this).apply {
+text = "EMERGENCY STOP"
+setBackgroundColor(Color.parseColor("#C62828"))
+setTextColor(Color.WHITE)
+setOnClickListener {
+StyxyAccessibilityService.instance?.emergencyStop("Stopped from Dashboard")
+}
+}
+​rowControls.addView(btnTestTap)
+rowControls.addView(btnStop)
+layout.addView(rowControls)
+​val btnCopyLogs = Button(this).apply {
+text = "Copy Diagnostic Logs to Clipboard"
+setOnClickListener {
+val logDump = synchronized(StyxyAccessibilityService.logs) {
+StyxyAccessibilityService.logs.joinToString("\n")
+}
+val cb = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+cb.setPrimaryClip(ClipData.newPlainText("STYXY_LOGS", logDump.ifEmpty { "No logs yet." }))
+Toast.makeText(context, "Diagnostic logs copied!", Toast.LENGTH_SHORT).show()
+}
+}
+layout.addView(btnCopyLogs)
+​val logHeader = TextView(this).apply {
+text = "LIVE DIAGNOSTIC TELEMETRY:"
+textSize = 14f
+setTextColor(Color.parseColor("#FFD600"))
+setPadding(0, 28, 0, 12)
+}
+layout.addView(logHeader)
+​tvLogOutput = TextView(this).apply {
+textSize = 11f
+setTextColor(Color.parseColor("#E0E0E0"))
+setBackgroundColor(Color.parseColor("#1B2030"))
+setPadding(24, 24, 24, 24)
+}
+layout.addView(tvLogOutput)
+​rootScroll.addView(layout)
+setContentView(rootScroll)
+}
+​override fun onResume() {
+super.onResume()
+uiHandler.post(refreshRunnable)
+}
+​override fun onPause() {
+uiHandler.removeCallbacks(refreshRunnable)
+super.onPause()
+}
+​private fun refreshDashboard() {
+val svc = StyxyAccessibilityService.instance
+if (svc == null) {
+tvServiceStatus.text = "SERVICE STATUS: DISCONNECTED (Tap button below to enable)"
+tvServiceStatus.setTextColor(Color.parseColor("#FF5252"))
+tvStateInfo.text = "Daily Target: 200 | Verified Actions: 0/200\nCurrent State: SERVICE_OFF"
+} else {
+tvServiceStatus.text = "SERVICE STATUS: ACTIVE & FLOATING OVERLAY READY"
+tvServiceStatus.setTextColor(Color.parseColor("#00E676"))
+tvStateInfo.text = buildString {
+appendLine("Daily Target: 200 | Verified Actions: ${svc.verifiedTapCount}/200")
+appendLine("Current State: ${svc.currentState}")
+appendLine("Last Action: ${svc.lastActionText}")
+append("Last Error: ${svc.lastErrorText}")
+}
+}
+​val logText = synchronized(StyxyAccessibilityService.logs) {
+if (StyxyAccessibilityService.logs.isEmpty()) "Waiting for actions..."
+else StyxyAccessibilityService.logs.take(30).joinToString("\n\n")
+}
+tvLogOutput.text = logText
+}
+}
+"""
+​import textwrap
+for rel_path, content in files.items():
+p = pathlib.Path(rel_path)
+p.parent.mkdir(parents=True, exist_ok=True)
+clean_content = textwrap.dedent(content).strip() + "\n"
+p.write_text(clean_content, encoding="utf-8")
+print(f"Wrote {rel_path}")
+​- name: Commit Generated Android Files to Repository
+run: |
+git config user.name "github-actions[bot]"
+git config user.email "github-actions[bot]@users.noreply.github.com"
+git add .
+if ! git diff --cached --quiet; then
+git commit -m "Initialize STYXY Bot v2 Milestone 1 Android project [skip ci]"
+git push
+fi
+​- name: Set up JDK 17
+uses: actions/setup-java@v4
+with:
+java-version: '17'
+distribution: 'temurin'
+​- name: Setup Android SDK
+uses: android-actions/setup-android@v3
+​- name: Setup Gradle 8.9
+uses: gradle/actions/setup-gradle@v4
+with:
+gradle-version: '8.9'
+​- name: Build Debug APK
+run: gradle assembleDebug --stacktrace
+​- name: Upload Installable STYXY Bot APK
+uses: actions/upload-artifact@v4
+with:
+name: STYXY-Bot-Milestone1-APK
+path: app/build/outputs/apk/debug/app-debug.apk
+if-no-files-found: error
